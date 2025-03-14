@@ -2,6 +2,7 @@ package diderot
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/linkedin/diderot/ads"
@@ -212,23 +213,51 @@ func (c *cache[T]) IsSubscribedTo(name string, handler ads.SubscriptionHandler[T
 }
 
 func (c *cache[T]) Subscribe(name string, handler ads.SubscriptionHandler[T]) {
+	// More details about this can be found in the documentation of WatchableValue. But the short version
+	// of it is that because Subscribe needs to not return until all notifications are delivered, and
+	// subscribing to a WatchableValue returns a WaitGroup if the loop goroutine will deliver the
+	// notification instead of this goroutine. To respect the Subscribe contract, wait for all the
+	// returned WaitGroups. Crucially however, because the various Compute methods on the resource map
+	// hold locks, waiting on the WaitGroups must be done *outside* of the lambdas passed to those
+	// methods. Hence, to avoid accidentally blocking anything, wait for the WaitGroups in a deferred
+	// statement.
+	var waitGroups []*sync.WaitGroup
+	appendWg := func(wg *sync.WaitGroup) {
+		// Only add non-nil WaitGroups to the slice to avoid nil-pointer panics, but primarily to avoid
+		// allocating a large slice of mostly nil WaitGroups since it is rare for WatchableValue.Subscribe to
+		// actually return a non-nil WaitGroup.
+		if wg != nil {
+			waitGroups = append(waitGroups, wg)
+		}
+	}
+	defer func() {
+		for _, wg := range waitGroups {
+			wg.Wait()
+		}
+	}()
+
 	if name == ads.WildcardSubscription {
 		subscribedAt, version := c.wildcardSubscribers.Subscribe(handler)
-		c.EntryNames(func(name string) bool {
+
+		for name := range c.EntryNames {
 			// Cannot call c.Subscribe here because it always creates a backing watchableValue if it does not
 			// already exist. For wildcard subscriptions, if the entry doesn't exist (or in this case has been
 			// deleted), a subscription isn't necessary. If the entry reappears, it will be automatically
 			// subscribed to.
 			c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-				value.NotifyHandlerAfterSubscription(handler, internal.WildcardSubscription, subscribedAt, version)
+				appendWg(value.NotifyHandlerAfterSubscription(
+					handler,
+					internal.WildcardSubscription,
+					subscribedAt,
+					version,
+				))
 			})
-			return true
-		})
+		}
 	} else if gcURL, err := ads.ParseGlobCollectionURL[T](name); err == nil {
-		c.globCollections.Subscribe(gcURL, handler)
+		waitGroups = c.globCollections.Subscribe(gcURL, handler)
 	} else {
 		c.createOrModifyEntry(name, func(name string, value *internal.WatchableValue[T]) {
-			value.Subscribe(handler)
+			appendWg(value.Subscribe(handler))
 		})
 	}
 }
@@ -347,7 +376,11 @@ type cacheWithPriority[T proto.Message] struct {
 func (c *cacheWithPriority[T]) Clear(name string, clearedAt time.Time) {
 	var shouldDelete bool
 	c.resources.ComputeIfPresent(name, func(name string, value *internal.WatchableValue[T]) {
-		shouldDelete = value.Clear(c.p, clearedAt) && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
+		isFullClear := value.Clear(c.p, clearedAt)
+		if gcURL, err := parseGlobCollectionURN[T](name); err == nil {
+			c.globCollections.RemoveValueFromCollection(gcURL, value)
+		}
+		shouldDelete = isFullClear && value.SubscriberSets[internal.ExplicitSubscription].Size() == 0
 	})
 	if shouldDelete {
 		c.deleteEntryIfNilAndNoSubscribers(name)
