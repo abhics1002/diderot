@@ -20,7 +20,7 @@ import (
 // StartNotificationBatch immediately preceding it. However, SubscriptionHandler.Notify can be
 // invoked at any point.
 type BatchSubscriptionHandler interface {
-	StartNotificationBatch()
+	StartNotificationBatch(map[string]string)
 	ads.RawSubscriptionHandler
 	EndNotificationBatch()
 }
@@ -115,6 +115,17 @@ type handler struct {
 	// If batchStarted is true, Notify will not notify notificationReceived. This allows the batch to
 	// complete before the response is sent, minimizing the number of responses.
 	batchStarted bool
+
+	// initialResourceVersion is a map of resource names to their initial version.
+	// this informs the server of the versions of the resources the xDS client knows of.
+	initialResourceVersion map[string]initialResourceVersion
+}
+
+type initialResourceVersion struct {
+	// initial version of the resource, which the xDS client has seen.
+	version string
+	// flag to indicate if the resource has been received from the server and skipped from the response.
+	received bool
 }
 
 // swapEntries grabs the lock then swaps the entries map to a nil map. It resets notificationReceived
@@ -229,6 +240,13 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		h.entries = entryMapPool.Get().(map[string]*ads.RawResource)
 	}
 
+	if res, found := h.initialResourceVersion[name]; found {
+		if r != nil && res.version == r.Version {
+			res.received = true
+			return
+		}
+	}
+
 	h.entries[name] = r
 
 	if r != nil && metadata.GlobCollectionURL != "" {
@@ -262,16 +280,29 @@ func (h *handler) ResourceMarshalError(name string, resource proto.Message, err 
 	}
 }
 
-func (h *handler) StartNotificationBatch() {
+func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string) {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
+	// setInitialResourceVersion sets the initial version of resources to filter out unchanged resources.
+	if len(initialResourceVersions) > 0 {
+		h.initialResourceVersion = make(map[string]initialResourceVersion, len(initialResourceVersions))
+		for name, version := range initialResourceVersions {
+			h.initialResourceVersion[name] = initialResourceVersion{version: version}
+		}
+	}
 	h.batchStarted = true
 }
 
 func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
+
+	for name, _ := range h.initialResourceVersion {
+		if _, found := h.entries[name]; found && h.initialResourceVersion[name].received {
+			h.entries[name] = nil
+		}
+	}
 
 	h.batchStarted = false
 
