@@ -130,7 +130,7 @@ func TestHandlerBatching(t *testing.T) {
 		expectedEntries[name] = nil
 	}
 
-	h.StartNotificationBatch()
+	h.StartNotificationBatch(nil)
 	notify()
 
 	for i := 0; i < 100; i++ {
@@ -167,7 +167,7 @@ func TestHandlerDoesNothingOnEmptyBatch(t *testing.T) {
 			return nil
 		},
 	)
-	h.StartNotificationBatch()
+	h.StartNotificationBatch(nil)
 	h.EndNotificationBatch()
 }
 
@@ -218,4 +218,121 @@ func TestPseudoDeltaSotWHandler(t *testing.T) {
 	l.Release()
 	require.WithinDuration(t, time.Now(), start.Add(wait), 10*time.Millisecond)
 	require.ElementsMatch(t, []*anypb.Any{testutils.MustMarshal(t, bazR).Resource}, lastRes.Resources)
+}
+
+func TestHandlerBatchingWithIRV(t *testing.T) {
+	var released atomic.Bool
+	ch := make(chan map[string]entry)
+	granular := NewTestHandlerLimiter()
+	handler := newHandler(
+		testutils.Context(t),
+		granular,
+		NoopLimiter{},
+		new(customStatsHandler),
+		false,
+		func(resources map[string]entry) error {
+			// Double check that send isn't invoked before it's expected
+			if !released.Load() {
+				t.Fatalf("send invoked before release!")
+			}
+			ch <- maps.Clone(resources)
+			return nil
+		},
+	)
+
+	notify := func(name string, version string, deleted bool) {
+		newRawResource := newRawResource(name, version)
+		if deleted {
+			newRawResource = nil
+		}
+		handler.Notify(name, newRawResource, ads.SubscriptionMetadata{})
+	}
+
+	expectedEntries := make(map[string]entry)
+
+	// case 1: when initial resource version is not being used.
+	handler.StartNotificationBatch(nil)
+	notify("foo", "0", false)
+	notify("bar", "0", false)
+	expectedEntries["bar"] = entry{
+		Resource: newRawResource("bar", "0"),
+		metadata: ads.SubscriptionMetadata{},
+	}
+	expectedEntries["foo"] = entry{
+		Resource: newRawResource("foo", "0"),
+		metadata: ads.SubscriptionMetadata{},
+	}
+	notify("foo", "0", false)
+	notify("bar", "0", false)
+
+	released.Store(true)
+	handler.EndNotificationBatch()
+	require.Equal(t, expectedEntries, <-ch)
+
+	clear(expectedEntries)
+
+	// case 2: when foo is not updated and bar is updated
+	req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
+	handler.StartNotificationBatch(req.InitialResourceVersions)
+	expectedEntries["bar"] = entry{
+		Resource: newRawResource("bar", "1"),
+		metadata: ads.SubscriptionMetadata{},
+	}
+	notify("foo", "0", false)
+	notify("bar", "1", false)
+
+	released.Store(true)
+	handler.EndNotificationBatch()
+	require.Equal(t, expectedEntries, <-ch)
+
+	clear(expectedEntries)
+
+	// case 3: when foo is deleted and bar is not updated
+	req = newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
+	handler.StartNotificationBatch(req.InitialResourceVersions)
+	notify("foo", "0", true)
+	notify("bar", "0", false)
+	expectedEntries["foo"] = entry{
+		Resource: nil,
+		metadata: ads.SubscriptionMetadata{},
+	}
+	released.Store(true)
+	handler.EndNotificationBatch()
+	require.Equal(t, expectedEntries, <-ch)
+
+	clear(expectedEntries)
+
+	// case 3: when foo is deleted and bar is updated and foo is re-created again
+	req = newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
+	handler.StartNotificationBatch(req.InitialResourceVersions)
+	notify("foo", "0", true)
+	notify("bar", "1", false)
+	notify("foo", "1", false)
+	expectedEntries["bar"] = entry{
+		Resource: newRawResource("bar", "1"),
+		metadata: ads.SubscriptionMetadata{},
+	}
+	expectedEntries["foo"] = entry{
+		Resource: newRawResource("foo", "1"),
+		metadata: ads.SubscriptionMetadata{},
+	}
+	released.Store(true)
+	handler.EndNotificationBatch()
+	require.Equal(t, expectedEntries, <-ch)
+}
+
+func newDeltaReq(subscribe []string, versions map[string]string) *ads.DeltaDiscoveryRequest {
+	return &ads.DeltaDiscoveryRequest{
+		ResourceNamesSubscribe:  subscribe,
+		InitialResourceVersions: versions,
+	}
+}
+
+func newRawResource(name string, version string) *ads.RawResource {
+	return &ads.RawResource{
+		Name:     name,
+		Version:  version,
+		Resource: &anypb.Any{},
+	}
+
 }
