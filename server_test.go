@@ -232,6 +232,11 @@ func TestEndToEnd(t *testing.T) {
 		t.Cleanup(clearEntry)
 	}
 
+	setCacheEntry := func(t *testing.T, name string, version string) {
+		bytesCache.SetResource(ads.NewResource(name, version, testData), time.Now())
+		t.Cleanup(clearEntry)
+	}
+
 	t.Run("delta", func(t *testing.T) {
 		statsHandler.reset()
 
@@ -266,6 +271,17 @@ func TestEndToEnd(t *testing.T) {
 
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource), res.Resources[0])
+
+		// Verify that using InitialResourceVersions prevents the server from resending unchanged resources upon re-subscription.
+		setCacheEntry(t, "foo", "0")
+		setCacheEntry(t, "bar", "0")
+		req.InitialResourceVersions = map[string]string{"foo": "0"}
+		req.ResourceNamesSubscribe = []string{"foo", "bar"}
+
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		require.Len(t, res.Resources, 1)
+		require.Equal(t, res.Resources[0].Name, "bar")
 
 		req.ResourceNamesSubscribe = nil
 		req.ResponseNonce = res.Nonce

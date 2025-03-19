@@ -305,7 +305,6 @@ func (h *handler) EndNotificationBatch() {
 	}
 
 	h.batchStarted = false
-
 	if len(h.entries) > 0 {
 		h.immediateNotificationReceived.notify()
 		h.notificationReceived.notify()
