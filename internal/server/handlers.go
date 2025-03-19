@@ -298,7 +298,7 @@ func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	for name, _ := range h.initialResourceVersion {
+	for name := range h.initialResourceVersion {
 		if _, found := h.entries[name]; found && h.initialResourceVersion[name].received {
 			h.entries[name] = nil
 		}

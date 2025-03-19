@@ -222,7 +222,7 @@ func TestPseudoDeltaSotWHandler(t *testing.T) {
 
 func TestHandlerBatchingWithIRV(t *testing.T) {
 	var released atomic.Bool
-	ch := make(chan map[string]entry)
+	ch := make(chan map[string]*ads.RawResource)
 	granular := NewTestHandlerLimiter()
 	handler := newHandler(
 		testutils.Context(t),
@@ -230,7 +230,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		NoopLimiter{},
 		new(customStatsHandler),
 		false,
-		func(resources map[string]entry) error {
+		func(resources map[string]*ads.RawResource) error {
 			// Double check that send isn't invoked before it's expected
 			if !released.Load() {
 				t.Fatalf("send invoked before release!")
@@ -248,20 +248,14 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		handler.Notify(name, newRawResource, ads.SubscriptionMetadata{})
 	}
 
-	expectedEntries := make(map[string]entry)
+	expectedEntries := make(map[string]*ads.RawResource)
 
 	// case 1: when initial resource version is not being used.
 	handler.StartNotificationBatch(nil)
 	notify("foo", "0", false)
 	notify("bar", "0", false)
-	expectedEntries["bar"] = entry{
-		Resource: newRawResource("bar", "0"),
-		metadata: ads.SubscriptionMetadata{},
-	}
-	expectedEntries["foo"] = entry{
-		Resource: newRawResource("foo", "0"),
-		metadata: ads.SubscriptionMetadata{},
-	}
+	expectedEntries["bar"] = newRawResource("bar", "0")
+	expectedEntries["foo"] = newRawResource("foo", "0")
 	notify("foo", "0", false)
 	notify("bar", "0", false)
 
@@ -274,10 +268,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 	// case 2: when foo is not updated and bar is updated
 	req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
 	handler.StartNotificationBatch(req.InitialResourceVersions)
-	expectedEntries["bar"] = entry{
-		Resource: newRawResource("bar", "1"),
-		metadata: ads.SubscriptionMetadata{},
-	}
+	expectedEntries["bar"] = newRawResource("bar", "1")
+
 	notify("foo", "0", false)
 	notify("bar", "1", false)
 
@@ -292,10 +284,7 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 	handler.StartNotificationBatch(req.InitialResourceVersions)
 	notify("foo", "0", true)
 	notify("bar", "0", false)
-	expectedEntries["foo"] = entry{
-		Resource: nil,
-		metadata: ads.SubscriptionMetadata{},
-	}
+	expectedEntries["foo"] = nil
 	released.Store(true)
 	handler.EndNotificationBatch()
 	require.Equal(t, expectedEntries, <-ch)
@@ -308,14 +297,8 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 	notify("foo", "0", true)
 	notify("bar", "1", false)
 	notify("foo", "1", false)
-	expectedEntries["bar"] = entry{
-		Resource: newRawResource("bar", "1"),
-		metadata: ads.SubscriptionMetadata{},
-	}
-	expectedEntries["foo"] = entry{
-		Resource: newRawResource("foo", "1"),
-		metadata: ads.SubscriptionMetadata{},
-	}
+	expectedEntries["bar"] = newRawResource("bar", "1")
+	expectedEntries["foo"] = newRawResource("foo", "1")
 	released.Store(true)
 	handler.EndNotificationBatch()
 	require.Equal(t, expectedEntries, <-ch)
