@@ -116,9 +116,9 @@ type handler struct {
 	// complete before the response is sent, minimizing the number of responses.
 	batchStarted bool
 
-	// initialResourceVersion is a map of resource names to their initial version.
+	// initialResourceVersions is a map of resource names to their initial version.
 	// this informs the server of the versions of the resources the xDS client knows of.
-	initialResourceVersion map[string]initialResourceVersion
+	initialResourceVersions map[string]initialResourceVersion
 }
 
 type initialResourceVersion struct {
@@ -240,7 +240,7 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		h.entries = entryMapPool.Get().(map[string]*ads.RawResource)
 	}
 
-	if res, found := h.initialResourceVersion[name]; found {
+	if res, ok := h.initialResourceVersions[name]; ok {
 		if r != nil && res.version == r.Version {
 			res.received = true
 			return
@@ -286,9 +286,9 @@ func (h *handler) StartNotificationBatch(initialResourceVersions map[string]stri
 
 	// setInitialResourceVersion sets the initial version of resources to filter out unchanged resources.
 	if len(initialResourceVersions) > 0 {
-		h.initialResourceVersion = make(map[string]initialResourceVersion, len(initialResourceVersions))
+		h.initialResourceVersions = make(map[string]initialResourceVersion, len(initialResourceVersions))
 		for name, version := range initialResourceVersions {
-			h.initialResourceVersion[name] = initialResourceVersion{version: version}
+			h.initialResourceVersions[name] = initialResourceVersion{version: version}
 		}
 	}
 	h.batchStarted = true
@@ -298,8 +298,8 @@ func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	for name := range h.initialResourceVersion {
-		if _, found := h.entries[name]; found && h.initialResourceVersion[name].received {
+	for name := range h.initialResourceVersions {
+		if _, ok := h.entries[name]; ok && h.initialResourceVersions[name].received {
 			h.entries[name] = nil
 		}
 	}
