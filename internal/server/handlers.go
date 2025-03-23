@@ -118,13 +118,15 @@ type handler struct {
 
 	// initialResourceVersions is a map of resource names to their initial version.
 	// this informs the server of the versions of the resources the xDS client knows of.
-	initialResourceVersions map[string]initialResourceVersion
+	initialResourceVersions map[string]*initialResourceVersion
 }
 
 type initialResourceVersion struct {
 	// initial version of the resource, which the xDS client has seen.
 	version string
-	// flag to indicate if the resource has been received from the server and skipped from the response.
+	// received flag indicates if the resource has been received from the server and skipped from the response.
+	// we are maintaining this flag to differentiate between the resource which is deleted on cache and
+	// the resource which is not updated since client has last seen it.
 	received bool
 }
 
@@ -286,9 +288,9 @@ func (h *handler) StartNotificationBatch(initialResourceVersions map[string]stri
 
 	// setInitialResourceVersion sets the initial version of resources to filter out unchanged resources.
 	if len(initialResourceVersions) > 0 {
-		h.initialResourceVersions = make(map[string]initialResourceVersion, len(initialResourceVersions))
+		h.initialResourceVersions = make(map[string]*initialResourceVersion, len(initialResourceVersions))
 		for name, version := range initialResourceVersions {
-			h.initialResourceVersions[name] = initialResourceVersion{version: version}
+			h.initialResourceVersions[name] = &initialResourceVersion{version: version}
 		}
 	}
 	h.batchStarted = true
@@ -298,8 +300,10 @@ func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
-	for name := range h.initialResourceVersions {
-		if _, ok := h.entries[name]; ok && h.initialResourceVersions[name].received {
+	for name, irv := range h.initialResourceVersions {
+		// if resource is not present on the server and client knows about it,
+		// that means resource is deleted and client don't know about it yet, (re-connect scenario) then sending resource deletion to client.
+		if _, ok := h.entries[name]; !ok && !irv.received {
 			h.entries[name] = nil
 		}
 	}

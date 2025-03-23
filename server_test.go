@@ -272,17 +272,6 @@ func TestEndToEnd(t *testing.T) {
 		require.Len(t, res.Resources, 1)
 		testutils.ProtoEquals(t, testutils.MustMarshal(t, testResource), res.Resources[0])
 
-		// Verify that using InitialResourceVersions prevents the server from resending unchanged resources upon re-subscription.
-		setCacheEntry(t, "foo", "0")
-		setCacheEntry(t, "bar", "0")
-		req.InitialResourceVersions = map[string]string{"foo": "0"}
-		req.ResourceNamesSubscribe = []string{"foo", "bar"}
-
-		require.NoError(t, stream.Send(req))
-		waitForResponse(t, res, stream, 10*time.Millisecond)
-		require.Len(t, res.Resources, 1)
-		require.Equal(t, res.Resources[0].Name, "bar")
-
 		req.ResourceNamesSubscribe = nil
 		req.ResponseNonce = res.Nonce
 		require.NoError(t, stream.Send(req))
@@ -326,6 +315,88 @@ func TestEndToEnd(t *testing.T) {
 		require.Eventually(t, func() bool {
 			return statsHandler.NACKsReceived.Load() == 1
 		}, 2*time.Second, 100*time.Millisecond)
+	})
+
+	t.Run("delta IRV support", func(t *testing.T) {
+		const (
+			foo = "foo"
+			bar = "bar"
+			qux = "qux"
+		)
+
+		req := &ads.DeltaDiscoveryRequest{
+			Node:    locator.node,
+			TypeUrl: testResource.TypeURL(),
+		}
+
+		newStream := func() (ads.DeltaClient, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(testutils.ContextWithTimeout(t, 5*time.Second))
+			stream, err := client.DeltaAggregatedResources(ctx)
+			require.NoError(t, err)
+			return stream, cancel
+		}
+
+		res := new(ads.DeltaDiscoveryResponse)
+
+		// Verify that using InitialResourceVersions prevents the server from resending unchanged resources upon re-subscription.
+		setCacheEntry(t, foo, "0")
+		setCacheEntry(t, bar, "1")
+		req.InitialResourceVersions = map[string]string{
+			foo: "0",
+			bar: "0",
+		}
+		req.ResourceNamesSubscribe = []string{"foo", "bar"}
+		stream, cancel := newStream()
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		require.Len(t, res.Resources, 1)
+		require.Equal(t, res.Resources[0].Name, "bar")
+
+		// Close the stream while the cache is updated to mimic a reconnect
+		cancel()
+
+		// validating for wildcard subscriptions
+		setCacheEntry(t, foo, "0")
+		setCacheEntry(t, qux, "0")
+		bytesCache.Clear(bar, time.Now())
+		req.InitialResourceVersions = map[string]string{
+			foo: "0",
+			bar: "1",
+		}
+		req.ResourceNamesSubscribe = []string{ads.WildcardSubscription}
+		stream, cancel = newStream()
+		require.NoError(t, stream.Send(req))
+		waitForResponse(t, res, stream, 10*time.Millisecond)
+		require.Len(t, res.RemovedResources, 1)
+		require.Equal(t, res.RemovedResources[0], bar)
+		require.Len(t, res.Resources, 1)
+		require.Equal(t, res.Resources[0].Name, qux)
+
+		// reconnect scenario
+		req.InitialResourceVersions = map[string]string{
+			foo: "0",
+			qux: "0",
+		}
+		stream, cancel = newStream()
+		require.NoError(t, stream.Send(req))
+		//waitForResponse(t, res, stream, 10*time.Millisecond)
+		ch := make(chan error)
+		go func() {
+			ch <- stream.RecvMsg(res)
+		}()
+
+		select {
+		case <-ch:
+			t.Fatalf("unexpected response: stream does not expect any response, if no version is changed")
+		case <-time.After(1 * time.Second):
+			// It's impossible to detect when the server *doesn't* send a response, but since the timeout for
+			// receiving a response in previous parts of the test is 10ms, if the server does not send a response
+			// for a second, it's safe to say it never will.
+			cancel()
+			// Wait for the goroutine to die.
+			<-ch
+		}
+
 	})
 
 	t.Run("SotW", func(t *testing.T) {
