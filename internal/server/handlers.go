@@ -282,6 +282,12 @@ func (h *handler) ResourceMarshalError(name string, resource proto.Message, err 
 	}
 }
 
+func (h *handler) ClearInitialResourceVersions() {
+	if h.initialResourceVersions != nil {
+		h.initialResourceVersions = nil
+	}
+}
+
 func (h *handler) StartNotificationBatch(initialResourceVersions map[string]string) {
 	h.lock.Lock()
 	defer h.lock.Unlock()

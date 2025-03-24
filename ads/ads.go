@@ -202,6 +202,10 @@ type RawSubscriptionHandler interface {
 	// rare and requires immediate attention. When a resource cannot be marshaled, the notification will
 	// be dropped and Notify will not be invoked.
 	ResourceMarshalError(name string, resource proto.Message, err error)
+
+	// ClearInitialResourceVersions is invoked when the initial resource versions can't be supported by the xds servers business logic.
+	// This provides a way to clear the initial resource versions for resource, so that it can be handled correctly by handler while responding to xds client.
+	ClearInitialResourceVersions()
 }
 
 // SubscriptionMetadata contains metadata about the subscription that triggered the Notify call on
