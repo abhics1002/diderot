@@ -372,6 +372,7 @@ func TestEndToEnd(t *testing.T) {
 		require.Len(t, res.Resources, 1)
 		require.Equal(t, res.Resources[0].Name, qux)
 
+		cancel()
 		// reconnect scenario
 		req.InitialResourceVersions = map[string]string{
 			foo: "0",
@@ -379,7 +380,6 @@ func TestEndToEnd(t *testing.T) {
 		}
 		stream, cancel = newStream()
 		require.NoError(t, stream.Send(req))
-		//waitForResponse(t, res, stream, 10*time.Millisecond)
 		ch := make(chan error)
 		go func() {
 			ch <- stream.RecvMsg(res)
@@ -396,7 +396,6 @@ func TestEndToEnd(t *testing.T) {
 			// Wait for the goroutine to die.
 			<-ch
 		}
-
 	})
 
 	t.Run("SotW", func(t *testing.T) {

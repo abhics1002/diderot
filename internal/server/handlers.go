@@ -242,11 +242,8 @@ func (h *handler) Notify(name string, r *ads.RawResource, metadata ads.Subscript
 		h.entries = entryMapPool.Get().(map[string]*ads.RawResource)
 	}
 
-	if res, ok := h.initialResourceVersions[name]; ok {
-		if r != nil && res.version == r.Version {
-			res.received = true
-			return
-		}
+	if h.handleMatchFromIRV(name, r) {
+		return
 	}
 
 	h.entries[name] = r
@@ -300,6 +297,15 @@ func (h *handler) EndNotificationBatch() {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 
+	h.handleDeletionsFromIRV()
+	h.batchStarted = false
+	if len(h.entries) > 0 {
+		h.immediateNotificationReceived.notify()
+		h.notificationReceived.notify()
+	}
+}
+
+func (h *handler) handleDeletionsFromIRV() {
 	for name, irv := range h.initialResourceVersions {
 		// if resource is not present on the server and client knows about it,
 		// that means resource is deleted and client don't know about it yet, (re-connect scenario) then sending resource deletion to client.
@@ -307,12 +313,16 @@ func (h *handler) EndNotificationBatch() {
 			h.entries[name] = nil
 		}
 	}
+}
 
-	h.batchStarted = false
-	if len(h.entries) > 0 {
-		h.immediateNotificationReceived.notify()
-		h.notificationReceived.notify()
+func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
+	if res, ok := h.initialResourceVersions[name]; ok {
+		if r != nil && res.version == r.Version {
+			res.received = true
+			return true
+		}
 	}
+	return false
 }
 
 func NewSotWHandler(

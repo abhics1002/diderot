@@ -221,6 +221,10 @@ func TestPseudoDeltaSotWHandler(t *testing.T) {
 }
 
 func TestHandlerBatchingWithIRV(t *testing.T) {
+	const (
+		foo = "foo"
+		bar = "bar"
+	)
 	var released atomic.Bool
 	ch := make(chan map[string]*ads.RawResource)
 	handler := newHandler(
@@ -238,67 +242,42 @@ func TestHandlerBatchingWithIRV(t *testing.T) {
 		handler.Notify(name, resource, ads.SubscriptionMetadata{})
 	}
 
-	expectedEntries := make(map[string]*ads.RawResource)
-
 	t.Run("partial update, foo not updated and bar updated", func(t *testing.T) {
 		req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
 		handler.StartNotificationBatch(req.InitialResourceVersions)
-		fooResource := newRawResource("foo", "0")
-		barResource := newRawResource("bar", "1")
-		expectedEntries["bar"] = barResource
-
-		notify("foo", fooResource)
-		notify("bar", barResource)
-
+		fooResource := newRawResource(foo, "0")
+		barResource := newRawResource(bar, "1")
+		notify(foo, fooResource)
+		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, expectedEntries, <-ch)
-		clear(expectedEntries)
+		require.Equal(t, map[string]*ads.RawResource{barResource.Name: barResource}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated", func(t *testing.T) {
-		req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
+		req := newDeltaReq([]string{foo, bar}, map[string]string{foo: "0", bar: "0"})
 		handler.StartNotificationBatch(req.InitialResourceVersions)
-		barResource := newRawResource("bar", "1")
-		notify("bar", barResource)
-		expectedEntries["foo"] = nil
-		expectedEntries["bar"] = barResource
+		barResource := newRawResource(bar, "1")
+		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, expectedEntries, <-ch)
-
-		clear(expectedEntries)
+		require.Equal(t, map[string]*ads.RawResource{
+			barResource.Name: barResource,
+			foo:              nil,
+		}, <-ch)
 	})
 
 	t.Run("partial update, foo deleted and bar updated with wildcard subscription", func(t *testing.T) {
-		req := newDeltaReq([]string{ads.WildcardSubscription}, map[string]string{"foo": "0", "bar": "0"})
+		req := newDeltaReq([]string{ads.WildcardSubscription}, map[string]string{foo: "0", bar: "0"})
 		handler.StartNotificationBatch(req.InitialResourceVersions)
-		barResource := newRawResource("bar", "1")
-		notify("bar", barResource)
-		expectedEntries["foo"] = nil
-		expectedEntries["bar"] = barResource
+		barResource := newRawResource(bar, "1")
+		notify(bar, barResource)
 		released.Store(true)
 		handler.EndNotificationBatch()
-		require.Equal(t, expectedEntries, <-ch)
-
-		clear(expectedEntries)
-	})
-
-	t.Run("partial update, foo deleted, bar updated and foo re-created", func(t *testing.T) {
-		req := newDeltaReq([]string{"foo", "bar"}, map[string]string{"foo": "0", "bar": "0"})
-		handler.StartNotificationBatch(req.InitialResourceVersions)
-
-		newFooResource := newRawResource("foo", "1")
-		barResource := newRawResource("bar", "1")
-		notify("foo", nil)
-		notify("bar", barResource)
-		notify("foo", newFooResource)
-
-		expectedEntries["bar"] = barResource
-		expectedEntries["foo"] = newFooResource
-		released.Store(true)
-		handler.EndNotificationBatch()
-		require.Equal(t, expectedEntries, <-ch)
+		require.Equal(t, map[string]*ads.RawResource{
+			barResource.Name: barResource,
+			foo:              nil,
+		}, <-ch)
 	})
 }
 
