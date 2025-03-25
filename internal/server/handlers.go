@@ -305,16 +305,18 @@ func (h *handler) EndNotificationBatch() {
 	}
 }
 
+// handleDeletionsFromIRV processes resources that are known to the client but are no longer present on the server.
+// This indicates that the resource has been deleted and the client is unaware of this (e.g. in a re-connect scenario)
+// The method update the entries to nil for such resources.
 func (h *handler) handleDeletionsFromIRV() {
 	for name, irv := range h.initialResourceVersions {
-		// if resource is not present on the server and client knows about it,
-		// that means resource is deleted and client don't know about it yet, (re-connect scenario) then sending resource deletion to client.
 		if _, ok := h.entries[name]; !ok && !irv.received {
 			h.entries[name] = nil
 		}
 	}
 }
 
+// handleMatchFromIRV checks if the given resource matches the initial resource version (IRV).
 func (h *handler) handleMatchFromIRV(name string, r *ads.RawResource) bool {
 	if res, ok := h.initialResourceVersions[name]; ok {
 		if r != nil && res.version == r.Version {
